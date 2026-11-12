@@ -205,7 +205,7 @@ const defaultTeam = () => ({name:'Meine Mannschaft', halfMin:20, fieldSize:6, fi
 
 /* ---------- Zustand ---------- */
 const S = {
-  team: defaultTeam(), games: {}, mode: 'local', view: 'games',
+  team: defaultTeam(), games: {}, deleted: {}, mode: 'local', view: 'games',
   gameId: null, subMode: false, statsScope: 'season', statsGame: '', sort: 'goals', gkSort: 'saves', playerId: null
 };
 let db = null;
@@ -213,13 +213,14 @@ const Q = {};          // Schreib-Warteschlangen je Dokument
 let undoTimer = null;
 
 /* ---------- Speicherung ---------- */
-function saveLocal(){
-  try{ localStorage.setItem(LS_KEY, JSON.stringify({team:S.team, games:S.games})); }catch(e){}
+function storeLocal(){
+  try{ localStorage.setItem(LS_KEY, JSON.stringify({team:S.team, games:S.games, deleted:S.deleted})); }catch(e){}
 }
+function saveLocal(){ storeLocal(); scheduleSync(); }
 function loadLocal(){
   try{
     const d = JSON.parse(localStorage.getItem(LS_KEY) || 'null');
-    if(d){ S.team = Object.assign(defaultTeam(), d.team || {}); S.games = d.games || {}; return true; }
+    if(d){ S.team = Object.assign(defaultTeam(), d.team || {}); S.games = d.games || {}; S.deleted = d.deleted || {}; return true; }
   }catch(e){}
   return false;
 }
@@ -250,14 +251,125 @@ async function removeDoc(path){
   saveLocal();
   if(S.mode === 'cloud'){ try{ await db.doc(path).delete(); }catch(e){ toast('Löschen fehlgeschlagen'); } }
 }
-const saveTeam = () => save('team/main', S.team);
-const saveGame = g => save('games/' + g.id, g);
+const saveTeam = () => { S.team.updatedAt = Date.now(); save('team/main', S.team); };
+const saveGame = g => { g.updatedAt = Date.now(); save('games/' + g.id, g); };
 
 function syncBadge(){
   const el = $('#sync'); if(!el) return;
   const busy = Object.keys(Q).some(pending);
+  if(S.mode !== 'cloud' && syncCfg){
+    const t = lastSync ? new Date(lastSync).toLocaleTimeString('de-DE', {hour:'2-digit', minute:'2-digit'}) : '';
+    if(syncing) el.innerHTML = '<span class="dot busy"></span>synchronisiert …';
+    else if(syncErr) el.innerHTML = `<span class="dot" style="background:var(--b)"></span>${navigator.onLine ? 'Sync-Fehler' : 'offline – Abgleich später'}`;
+    else if(syncDirty) el.innerHTML = `<span class="dot busy"></span>${navigator.onLine ? 'wartet auf Abgleich' : 'offline – Abgleich später'}`;
+    else el.innerHTML = `<span class="dot"></span>abgeglichen ${t}`;
+    return;
+  }
   if(S.mode !== 'cloud') el.innerHTML = '<span class="dot"></span>offline gespeichert';
   else el.innerHTML = busy ? '<span class="dot busy"></span>speichert …' : '<span class="dot"></span>gespeichert';
+}
+
+/* ---------- Abgleich mit privatem GitHub-Repository ---------- */
+const SYNC_KEY = 'hbstats_sync', SYNC_FILE = 'handball-daten.json';
+let syncCfg = null, syncing = false, syncAgain = false, syncTimer = null, syncErr = '', syncDirty = false, lastSync = 0;
+try{ syncCfg = JSON.parse(localStorage.getItem(SYNC_KEY) || 'null'); lastSync = (syncCfg && syncCfg.lastSync) || 0; }catch(e){}
+function storeSyncCfg(){ try{ syncCfg ? localStorage.setItem(SYNC_KEY, JSON.stringify(Object.assign(syncCfg, {lastSync}))) : localStorage.removeItem(SYNC_KEY); }catch(e){} }
+const b64enc = str => { const b = new TextEncoder().encode(str); let s = ''; for(let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000)); return btoa(s); };
+const b64dec = b64 => new TextDecoder().decode(Uint8Array.from(atob(b64.replace(/\s/g, '')), c => c.charCodeAt(0)));
+function stableStr(v){
+  if(Array.isArray(v)) return '[' + v.map(stableStr).join(',') + ']';
+  if(v && typeof v === 'object') return '{' + Object.keys(v).sort().filter(k => v[k] !== undefined).map(k => JSON.stringify(k) + ':' + stableStr(v[k])).join(',') + '}';
+  return JSON.stringify(v === undefined ? null : v);
+}
+function mergeData(a, b){
+  const deleted = Object.assign({}, a.deleted || {});
+  for(const k in (b.deleted || {})) deleted[k] = Math.max(deleted[k] || 0, b.deleted[k]);
+  const games = {};
+  for(const src of [a.games || {}, b.games || {}]) for(const id in src){
+    const g = src[id]; if(!games[id] || (g.updatedAt || 0) > (games[id].updatedAt || 0)) games[id] = g;
+  }
+  for(const id in deleted) if(games[id] && (games[id].updatedAt || 0) <= deleted[id]) delete games[id];
+  const ta = a.team, tb = b.team;
+  const team = !tb ? ta : !ta ? tb : ((ta.updatedAt || 0) >= (tb.updatedAt || 0) ? ta : tb);
+  return {team, games, deleted};
+}
+function ghFetch(cfg, path, opts = {}){
+  return fetch('https://api.github.com/repos/' + cfg.repo + path, Object.assign({cache:'no-store'}, opts, {
+    headers: Object.assign({'Authorization':'Bearer ' + cfg.token, 'Accept':'application/vnd.github+json', 'X-GitHub-Api-Version':'2022-11-28'}, opts.body ? {'Content-Type':'application/json'} : {})
+  }));
+}
+function httpMsg(st){
+  return st === 401 ? 'Token ungültig oder abgelaufen' : st === 403 ? 'Kein Zugriff (Token-Rechte prüfen)' : st === 404 ? 'Repository nicht gefunden' : 'GitHub-Fehler ' + st;
+}
+function scheduleSync(ms = 8000){
+  if(!syncCfg) return;
+  syncDirty = true; syncBadge();
+  clearTimeout(syncTimer); syncTimer = setTimeout(() => syncNow(), ms);
+}
+async function syncNow(manual){
+  if(!syncCfg) return;
+  if(syncing){ syncAgain = true; return; }
+  if(!navigator.onLine){ syncErr = 'offline'; syncBadge(); if(manual) toast('Kein Internet – Abgleich folgt automatisch'); return; }
+  syncing = true; syncErr = ''; syncBadge();
+  const cfg = syncCfg; let changedLocal = false;
+  try{
+    for(let attempt = 0; attempt < 3; attempt++){
+      let remote = {team:null, games:{}, deleted:{}}, sha = null;
+      const r = await ghFetch(cfg, '/contents/' + SYNC_FILE);
+      if(r.status === 200){ const j = await r.json(); sha = j.sha; const d = JSON.parse(b64dec(j.content)); remote = {team:d.team || null, games:d.games || {}, deleted:d.deleted || {}}; }
+      else if(r.status !== 404) throw new Error(httpMsg(r.status));
+      // ab hier ohne await bis zur Übernahme: lokale Änderungen gehen nicht verloren
+      const before = stableStr({team:S.team, games:S.games, deleted:S.deleted});
+      const m = mergeData({team:S.team, games:S.games, deleted:S.deleted}, remote);
+      S.team = Object.assign(defaultTeam(), m.team || {}); S.games = m.games; S.deleted = m.deleted;
+      const after = stableStr({team:S.team, games:S.games, deleted:S.deleted});
+      if(after !== before){ changedLocal = true; storeLocal(); }
+      const remoteStr = stableStr({team:remote.team ? Object.assign(defaultTeam(), remote.team) : defaultTeam(), games:remote.games, deleted:remote.deleted});
+      syncDirty = false;
+      if(after !== remoteStr || !sha){
+        const body = JSON.stringify({message:'Daten ' + new Date().toLocaleString('de-DE'), content:b64enc(JSON.stringify({app:'hbstats', v:1, savedAt:new Date().toISOString(), team:S.team, games:S.games, deleted:S.deleted})), ...(sha ? {sha} : {})});
+        const pr = await ghFetch(cfg, '/contents/' + SYNC_FILE, {method:'PUT', body});
+        if((pr.status === 409 || pr.status === 422) && attempt < 2) continue;   // jemand anderes hat zwischendurch gespeichert
+        if(!pr.ok) throw new Error(httpMsg(pr.status));
+      }
+      lastSync = Date.now(); storeSyncCfg(); break;
+    }
+  }catch(e){ syncErr = (e && e.message) || 'Fehler'; syncDirty = true; if(manual) toast('Abgleich fehlgeschlagen: ' + syncErr); }
+  syncing = false;
+  if(changedLocal && !drag && $('#sheet').classList.contains('hidden')) render(); else syncBadge();
+  if(manual && !syncErr) toast('Abgleich erfolgreich');
+  if(syncAgain){ syncAgain = false; scheduleSync(1500); }
+}
+window.addEventListener('online', () => { if(syncCfg) syncNow(); });
+document.addEventListener('visibilitychange', () => { if(document.visibilityState === 'hidden' && syncCfg && syncDirty) syncNow(); });
+function sheetSync(){
+  const c = syncCfg || {repo:'Patrick-GFHL/handball-daten', token:''};
+  openSheet(`<h2>Online-Abgleich (GitHub)</h2>
+    <div class="mute" style="margin-bottom:10px">Die Daten werden zusätzlich in einem <b>privaten</b> GitHub-Repository gespeichert und zwischen deinen Geräten abgeglichen. Offline arbeitet die App normal weiter und gleicht später ab.</div>
+    <label class="field"><span>Privates Repository (Besitzer/Name)</span><input id="syRepo" value="${esc(c.repo)}" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+    <label class="field"><span>Zugangs-Token</span><input id="syTok" type="password" value="${esc(c.token)}" placeholder="github_pat_…" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+    <button class="btn full" id="syGo">${syncCfg ? 'Speichern & abgleichen' : 'Verbinden & testen'}</button>
+    ${syncCfg ? `<button class="btn full sec" id="syNow" style="margin-top:8px">Jetzt abgleichen</button><button class="btn full danger" id="syOff" style="margin-top:8px">Abgleich auf diesem Gerät beenden</button>` : ''}
+    <div id="syMsg" class="mute" style="margin-top:10px"></div>`);
+  $('#syGo').onclick = async () => {
+    const repo = $('#syRepo').value.trim().replace(/^https?:\/\/github\.com\//, '').replace(/\/$/, ''), token = $('#syTok').value.trim();
+    const msg = $('#syMsg');
+    if(!/^[\w.-]+\/[\w.-]+$/.test(repo) || !token){ msg.textContent = 'Bitte Repository (Besitzer/Name) und Token eintragen.'; return; }
+    msg.textContent = 'Prüfe Zugang …';
+    try{
+      const r = await ghFetch({repo, token}, '');
+      if(!r.ok){ msg.textContent = httpMsg(r.status) + '.'; return; }
+      const j = await r.json();
+      if(!j.private){ msg.innerHTML = '<b style="color:var(--b)">Dieses Repository ist öffentlich.</b> Die Spielerdaten würden für alle sichtbar. Bitte ein privates Repository verwenden.'; return; }
+      if(j.permissions && j.permissions.push === false){ msg.textContent = 'Das Token darf nicht schreiben. Bei den Token-Rechten „Contents: Read and write“ setzen.'; return; }
+      syncCfg = {repo, token}; lastSync = 0; storeSyncCfg();
+      closeSheet(); await syncNow(true); render();
+    }catch(e){ msg.textContent = 'Keine Verbindung zu GitHub. Bist du online?'; }
+  };
+  if(syncCfg){
+    $('#syNow').onclick = () => { closeSheet(); syncNow(true); };
+    $('#syOff').onclick = async () => { if(await ask('Abgleich auf diesem Gerät beenden? Die Daten bleiben lokal und im Repository erhalten.', 'Beenden')){ syncCfg = null; storeSyncCfg(); render(); } };
+  }
 }
 
 async function initStore(){
@@ -303,7 +415,7 @@ async function initStore(){
   }, err => { toast('Verbindung zum Speicher verloren.'); gamesReady = true; maybeDone(); });
 }
 let loaded = false;
-function done(){ if(loaded) return; loaded = true; $('#loading').classList.add('hidden'); render(); }
+function done(){ if(loaded) return; loaded = true; $('#loading').classList.add('hidden'); render(); if(syncCfg) syncNow(); }
 
 /* ---------- Hilfen ---------- */
 const players = () => [...S.team.players].sort((a,b) => (+a.number||999) - (+b.number||999) || a.name.localeCompare(b.name));
@@ -429,7 +541,7 @@ function renderGames(){
   let h = `<button class="btn full" data-a="newGame" style="margin-bottom:12px">＋ Neues Spiel</button>`;
   if(!S.team.players.length) h += `<div class="note">Lege zuerst unter „Kader“ deine Spieler an.</div>`;
   { const lb = lastBackup(), newest = Math.max(0, ...Object.values(S.games).map(g => Math.max(g.createdAt || 0, ...(g.events || []).map(e => e.at || 0))));
-    if(newest && newest > lb) h += `<div class="note">Es gibt Daten seit der letzten Sicherung. <button class="btn sm sec" data-a="export" style="margin-left:6px">Jetzt sichern</button></div>`; }
+    if(!syncCfg && newest && newest > lb) h += `<div class="note">Es gibt Daten seit der letzten Sicherung. <button class="btn sm sec" data-a="export" style="margin-left:6px">Jetzt sichern</button></div>`; }
   if(!gs.length) return h + `<div class="empty">Noch keine Spiele erfasst.</div>`;
   for(const g of gs){
     const sc = score(g);
@@ -467,9 +579,13 @@ function renderRoster(){
     }
     h += `</div>`;
   }
+  h += `<div class="card"><div class="row"><div class="grow"><b>Online-Abgleich (GitHub)</b><div class="mute">${syncCfg
+      ? `Verbunden mit ${esc(syncCfg.repo)}${lastSync ? ' · zuletzt ' + new Date(lastSync).toLocaleString('de-DE', {dateStyle:'short', timeStyle:'short'}) : ''}${syncErr && syncErr !== 'offline' ? '<br><span style="color:var(--b)">' + esc(syncErr) + '</span>' : ''}`
+      : 'Aus – Daten nur auf diesem Gerät'}</div></div>
+    <button class="btn sm ${syncCfg ? 'sec' : ''}" data-a="sync">${syncCfg ? 'Einstellungen' : 'Einrichten'}</button></div></div>`;
   h += `<div class="card"><b>Datensicherung</b><div class="mute" style="margin:4px 0 10px">Alle Daten als Text kopieren oder aus einer Sicherung wiederherstellen.</div>
     <div class="row"><button class="btn sm sec" data-a="export">Sicherung kopieren</button><button class="btn sm sec" data-a="import">Wiederherstellen</button></div></div>`;
-  h += `<div class="mute" style="padding:0 4px 10px">Die Daten liegen nur auf diesem Gerät. Letzte Sicherung: ${lastBackup() ? new Date(lastBackup()).toLocaleString('de-DE', {dateStyle:'short', timeStyle:'short'}) : 'noch nie'}.</div>`;
+  h += `<div class="mute" style="padding:0 4px 10px">${syncCfg ? 'Zusätzliche Sicherung als Datei:' : 'Die Daten liegen nur auf diesem Gerät. Letzte Sicherung:'} ${lastBackup() ? new Date(lastBackup()).toLocaleString('de-DE', {dateStyle:'short', timeStyle:'short'}) : 'noch nie'}.</div>`;
   return h;
 }
 
@@ -787,7 +903,7 @@ function sheetGame(id){
   };
   if(g) $('#gDel').onclick = async () => {
     if(await ask(`Spiel gegen ${g.opponent} mit allen ${g.events.length} Ereignissen löschen?`)){
-      delete S.games[g.id]; removeDoc('games/' + g.id); render();
+      delete S.games[g.id]; S.deleted[g.id] = Date.now(); removeDoc('games/' + g.id); render();
     }
   };
 }
@@ -971,7 +1087,10 @@ function sheetExport(){
 function applyBackup(txt){
   let d; try{ d = JSON.parse(txt); }catch(e){ toast('Keine gültige Sicherung'); return; }
   if(!d || d.app !== 'hbstats' || !d.team || !d.games){ toast('Keine gültige Sicherung'); return; }
-  S.team = Object.assign(defaultTeam(), d.team); S.games = d.games;
+  const now = Date.now();
+  for(const id in S.games) if(!d.games[id]) S.deleted[id] = now;
+  S.team = Object.assign(defaultTeam(), d.team, {updatedAt: now}); S.games = d.games;
+  for(const id in S.games){ S.games[id].updatedAt = now; delete S.deleted[id]; }
   saveLocal(); closeSheet(); toast('Sicherung wiederhergestellt'); render();
 }
 function sheetImport(){
@@ -1000,6 +1119,7 @@ document.addEventListener('click', async ev => {
     case 'editTeam': sheetTeam(); break;
     case 'export': sheetExport(); break;
     case 'import': sheetImport(); break;
+    case 'sync': sheetSync(); break;
     case 'timeout': if(g) sheetTimeout(g); break;
     case 'oppMiss': if(g) addEvents(g, [{pid:null, type:'oppMiss'}], 'Fehlwurf Gegner'); break;
     case 'subMode': S.subMode = !S.subMode; S.subSel = null; render(); break;
