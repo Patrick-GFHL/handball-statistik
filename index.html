@@ -568,7 +568,7 @@ function renderRoster(){
   const ps = players();
   let h = `<div class="card"><div class="row"><div class="grow"><b>Mannschaft</b><div class="mute">${esc(S.team.name)} · Halbzeit ${S.team.halfMin} min · ${S.team.fieldSize || 6}+1 auf dem Feld · 2 Min: ${S.team.fillOnTwo !== false ? 'auffüllen' : 'Unterzahl'}</div></div>
     <button class="btn sm sec" data-a="editTeam">Ändern</button></div></div>`;
-  h += `<button class="btn full" data-a="editPlayer" style="margin-bottom:10px">＋ Spieler hinzufügen</button>`;
+  h += `<div class="row" style="margin-bottom:10px;gap:8px"><button class="btn grow" data-a="editPlayer">＋ Spieler hinzufügen</button><button class="btn sec" data-a="bulkPlayers">Liste eingeben</button></div>`;
   if(!ps.length) h += `<div class="empty">Noch keine Spieler.</div>`;
   else{
     h += `<div class="card list">`;
@@ -838,27 +838,102 @@ function toast(msg, undo){
 }
 
 function sheetPlayerEdit(id){
-  const p = id ? pById(id) : {name:'', number:'', tw:false, inactive:false};
-  openSheet(`<h2>${id ? 'Spieler bearbeiten' : 'Neuer Spieler'}</h2>
+  if(!id) return sheetPlayerNew();
+  const p = pById(id);
+  openSheet(`<h2>Spieler bearbeiten</h2>
     <div class="row"><label class="field" style="width:90px"><span>Nummer</span><input id="fNum" inputmode="numeric" value="${esc(p.number)}"></label>
     <label class="field grow"><span>Name</span><input id="fName" value="${esc(p.name)}" placeholder="Vorname"></label></div>
     <label class="chk"><input type="checkbox" id="fTw" ${p.tw?'checked':''}> Torwart</label>
-    ${id ? `<label class="chk"><input type="checkbox" id="fIn" ${p.inactive?'checked':''}> inaktiv (wird bei neuen Spielen nicht vorausgewählt)</label>` : ''}
+    <label class="chk"><input type="checkbox" id="fIn" ${p.inactive?'checked':''}> inaktiv (wird bei neuen Spielen nicht vorausgewählt)</label>
     <button class="btn full" id="fSave" style="margin-top:8px">Speichern</button>
-    ${id ? `<button class="btn full danger" id="fDel" style="margin-top:8px">Spieler löschen</button>` : ''}`);
-  setTimeout(() => { const f = $('#fName'); if(f) f.focus(); }, 50);
+    <button class="btn full danger" id="fDel" style="margin-top:8px">Spieler löschen</button>`);
   $('#fSave').onclick = () => {
     const name = $('#fName').value.trim(), number = $('#fNum').value.trim();
     if(!name){ $('#fName').focus(); return; }
-    if(id){ Object.assign(p, {name, number, tw:$('#fTw').checked, inactive:$('#fIn').checked}); }
-    else S.team.players.push({id:uid(), name, number, tw:$('#fTw').checked, inactive:false});
+    Object.assign(p, {name, number, tw:$('#fTw').checked, inactive:$('#fIn').checked});
     saveTeam(); closeSheet(); render();
   };
-  if(id) $('#fDel').onclick = async () => {
+  $('#fDel').onclick = async () => {
     const used = Object.values(S.games).some(g => g.events.some(e => e.pid === id));
     if(await ask(used ? `${p.name} hat erfasste Statistiken. Besser „inaktiv“ setzen. Trotzdem löschen?` : `${p.name} löschen?`)){
       S.team.players = S.team.players.filter(x => x.id !== id); saveTeam(); render();
     }
+  };
+}
+/* Neuer Spieler: Formular bleibt offen für den nächsten */
+function sheetPlayerNew(){
+  const added = [];
+  openSheet(`<h2>Spieler hinzufügen</h2>
+    <div class="row"><label class="field" style="width:90px"><span>Nummer</span><input id="fNum" inputmode="numeric" enterkeyhint="next"></label>
+    <label class="field grow"><span>Name</span><input id="fName" placeholder="Vorname" enterkeyhint="done"></label></div>
+    <label class="chk"><input type="checkbox" id="fTw"> Torwart</label>
+    <button class="btn full" id="fNext" style="margin-top:8px">Speichern & nächster</button>
+    <button class="btn full sec" id="fDone" style="margin-top:8px">Fertig</button>
+    <div id="fAdded" class="mute" style="margin-top:10px"></div>
+    <button class="btn ghost" id="fBulk" style="margin-top:4px;padding-left:0">Stattdessen alle als Liste eingeben ›</button>`);
+  const focusNum = () => setTimeout(() => { const f = $('#fNum'); if(f) f.focus(); }, 30);
+  focusNum();
+  const commit = () => {
+    const name = $('#fName').value.trim(), number = $('#fNum').value.trim();
+    if(!name){ $('#fName').focus(); return false; }
+    if(number && S.team.players.some(x => String(x.number) === number && !x.inactive)) toast(`Achtung: Nummer ${number} ist schon vergeben`);
+    S.team.players.push({id:uid(), name, number, tw:$('#fTw').checked, inactive:false});
+    saveTeam(); render();
+    added.push(`#${number} ${name}`);
+    $('#fAdded').textContent = `Hinzugefügt (${added.length}): ` + added.join(', ');
+    $('#fName').value = ''; $('#fNum').value = ''; $('#fTw').checked = false;
+    return true;
+  };
+  $('#fNext').onclick = () => { if(commit()) focusNum(); };
+  $('#fNum').addEventListener('keydown', e => { if(e.key === 'Enter'){ e.preventDefault(); $('#fName').focus(); } });
+  $('#fName').addEventListener('keydown', e => { if(e.key === 'Enter'){ e.preventDefault(); if(commit()) focusNum(); } });
+  $('#fDone').onclick = () => {
+    if($('#fName').value.trim()) commit();
+    closeSheet(); if(added.length) toast(`${added.length} Spieler hinzugefügt`);
+  };
+  $('#fBulk').onclick = sheetPlayerBulk;
+}
+/* Mehrere Spieler auf einmal: eine Zeile pro Spieler */
+function parsePlayerLines(txt){
+  const out = [];
+  for(let line of txt.split(/\r?\n/)){
+    line = line.trim(); if(!line) continue;
+    let tw = false;
+    line = line.replace(/\(?\b(tw|torwart|torhüter|torhueter|goalie)\b\)?/gi, () => { tw = true; return ' '; });
+    line = line.trim();
+    let number = '';
+    let m = line.match(/^#?\s*(\d{1,3})\s*[.,;:\-–)]?\s+(.*)$/) || line.match(/^(\d{1,3})$/);
+    if(m){ number = m[1]; line = m[2] || ''; }
+    else if((m = line.match(/^(.*?)[\s,;:\-–(]+#?(\d{1,3})\)?$/))){ line = m[1]; number = m[2]; }
+    const name = line.replace(/[,;:\-–]+$/, '').replace(/\s+/g, ' ').trim();
+    if(name) out.push({name, number, tw});
+  }
+  return out;
+}
+function sheetPlayerBulk(){
+  openSheet(`<h2>Mehrere Spieler eingeben</h2>
+    <div class="mute" style="margin-bottom:8px">Eine Zeile pro Spieler: Nummer und Name. „TW“ dahinter markiert Torhüter. Du kannst die Liste auch aus einer Notiz oder WhatsApp einfügen.</div>
+    <textarea id="bTxt" rows="10" placeholder="1 Ben TW&#10;4 Ella&#10;7 Mia&#10;10 Leo&#10;12 Tom TW"></textarea>
+    <div id="bPrev" class="mute" style="margin:8px 0"></div>
+    <button class="btn full" id="bGo">Spieler übernehmen</button>
+    <button class="btn full sec" id="bCancel" style="margin-top:8px">Abbrechen</button>`);
+  const upd = () => {
+    const list = parsePlayerLines($('#bTxt').value);
+    const dup = list.filter(x => x.number && S.team.players.some(p => String(p.number) === x.number && !p.inactive)).map(x => x.number);
+    $('#bPrev').innerHTML = list.length
+      ? `<b>${list.length} Spieler erkannt:</b> ` + list.map(x => `${x.number ? '#' + esc(x.number) + ' ' : ''}${esc(x.name)}${x.tw ? ' (TW)' : ''}`).join(', ')
+        + (dup.length ? `<br><span style="color:var(--b)">Nummer schon vergeben: ${dup.join(', ')}</span>` : '')
+      : '';
+    $('#bGo').textContent = list.length ? `${list.length} Spieler übernehmen` : 'Spieler übernehmen';
+  };
+  $('#bTxt').addEventListener('input', upd);
+  setTimeout(() => { const t = $('#bTxt'); if(t) t.focus(); }, 30);
+  $('#bCancel').onclick = closeSheet;
+  $('#bGo').onclick = () => {
+    const list = parsePlayerLines($('#bTxt').value);
+    if(!list.length){ $('#bTxt').focus(); return; }
+    list.forEach(x => S.team.players.push({id:uid(), name:x.name, number:x.number, tw:x.tw, inactive:false}));
+    saveTeam(); closeSheet(); render(); toast(`${list.length} Spieler hinzugefügt`);
   };
 }
 function sheetTeam(){
@@ -1120,6 +1195,7 @@ document.addEventListener('click', async ev => {
     case 'export': sheetExport(); break;
     case 'import': sheetImport(); break;
     case 'sync': sheetSync(); break;
+    case 'bulkPlayers': sheetPlayerBulk(); break;
     case 'timeout': if(g) sheetTimeout(g); break;
     case 'oppMiss': if(g) addEvents(g, [{pid:null, type:'oppMiss'}], 'Fehlwurf Gegner'); break;
     case 'subMode': S.subMode = !S.subMode; S.subSel = null; render(); break;
