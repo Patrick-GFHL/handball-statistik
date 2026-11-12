@@ -67,7 +67,7 @@ label.chk input{width:22px;height:22px}
 .clock button{background:rgba(255,255,255,.15);color:#fff;padding:8px 12px;font-size:14px}
 .clock button.go{background:var(--g)}
 .gk{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
-@media(min-width:520px){.gk{grid-template-columns:repeat(4,1fr)}}
+@media(min-width:520px){.gk{grid-template-columns:repeat(5,1fr)}}
 .act{padding:14px 6px;font-weight:700;font-size:15px;border-radius:12px;min-height:54px}
 .act.g{background:var(--g2);color:var(--g)}.act.b{background:var(--b2);color:var(--b)}
 .act.y{background:var(--y2);color:var(--y)}.act.r{background:#fecaca;color:var(--r)}
@@ -193,7 +193,7 @@ const EV = {
   goal:{l:'Tor',c:'g'}, miss:{l:'Fehlwurf',c:'b'}, p7goal:{l:'7m Tor',c:'g'}, p7miss:{l:'7m verworfen',c:'b'},
   assist:{l:'Assist',c:'n'}, steal:{l:'Ballgewinn',c:'n'}, block:{l:'Block',c:'n'}, p7drawn:{l:'7m rausgeholt',c:'n'},
   tf:{l:'Techn. Fehler',c:'b'}, yellow:{l:'Gelb',c:'y'}, two:{l:'2 Min',c:'y'}, red:{l:'Rot',c:'r'},
-  save:{l:'Parade',c:'g'}, p7save:{l:'7m gehalten',c:'g'}, conceded:{l:'Gegentor',c:'b'},
+  save:{l:'Parade',c:'g'}, p7save:{l:'7m gehalten',c:'g'}, conceded:{l:'Gegentor',c:'b'}, p7conceded:{l:'7m Gegentor',c:'b'},
   in:{l:'↑ Rein',c:'n'}, out:{l:'↓ Raus',c:'n'}, gk:{l:'Torwart',c:'y'},
   to:{l:'Auszeit',c:'r'}, toOpp:{l:'Auszeit Gegner',c:'n'}, oppMiss:{l:'Fehlwurf Gegner',c:'g'}
 };
@@ -457,7 +457,7 @@ function clockSec(g){ const c = g.clock; return Math.max(0, Math.floor(c.elapsed
 const fmtClock = s => String(Math.floor(s/60)).padStart(2,'0') + ':' + String(s%60).padStart(2,'0');
 function score(g){
   let us = 0, them = 0;
-  for(const e of g.events){ if(e.type === 'goal' || e.type === 'p7goal') us++; else if(e.type === 'conceded') them++; }
+  for(const e of g.events){ if(e.type === 'goal' || e.type === 'p7goal') us++; else if(e.type === 'conceded' || e.type === 'p7conceded') them++; }
   return {us, them};
 }
 const pct = (a,b) => b ? Math.round(a/b*100) + '%' : '–';
@@ -540,8 +540,9 @@ function fieldRow(c){
     two:c.two||0, yellow:c.yellow||0, red:c.red||0 };
 }
 function gkRow(c){
-  const sv = (c.save||0) + (c.p7save||0), ga = c.conceded||0;
-  return { gp:c._gp||0, min:Math.floor((c._gks||0)/60), saves:sv, ga, faced:sv+ga, q: (sv+ga) ? sv/(sv+ga) : -1, p7save:c.p7save||0 };
+  const sv = (c.save||0) + (c.p7save||0), ga = (c.conceded||0) + (c.p7conceded||0);
+  const p7save = c.p7save||0, p7faced = p7save + (c.p7conceded||0);
+  return { gp:c._gp||0, min:Math.floor((c._gks||0)/60), saves:sv, ga, faced:sv+ga, q: (sv+ga) ? sv/(sv+ga) : -1, p7save, p7faced, p7q: p7faced ? p7save/p7faced : -1 };
 }
 
 /* ---------- Render ---------- */
@@ -710,6 +711,7 @@ function renderLive(g){
         <button class="act g" data-a="gkEv" data-t="save">Parade</button>
         <button class="act g" data-a="gkEv" data-t="p7save">7m gehalten</button>
         <button class="act b" data-a="gkEv" data-t="conceded">Gegentor</button>
+        <button class="act b" data-a="gkEv" data-t="p7conceded">7m Gegentor</button>
         <button class="act n" data-a="oppMiss">Fehlwurf Gegner</button>
       </div></div>
   </div>
@@ -756,14 +758,16 @@ function renderStats(){
     <div class="kpi"><b>${ts}</b><span>Würfe</span></div>
     <div class="kpi"><b>${ttf}</b><span>Techn. Fehler</span></div>
     <div class="kpi"><b>${S.statsScope==='season' ? `${w}-${d}-${l}` : sel.length ? (()=>{const s=score(sel[0]);return s.us>s.them?'Sieg':s.us<s.them?'Niederl.':'Remis'})() : ''}</b><span>${S.statsScope==='season'?'S-U-N':'Ergebnis'}</span></div></div>`;
-  { let oSv = 0, oGa = 0, oMiss = 0, t7 = 0, t7a = 0;
-    for(const g of sel) for(const e of g.events){ if(e.type==='save'||e.type==='p7save') oSv++; else if(e.type==='conceded') oGa++; else if(e.type==='oppMiss') oMiss++;
-      if(e.type==='p7goal'){ t7++; t7a++; } else if(e.type==='p7miss') t7a++; }
+  { let oSv = 0, oGa = 0, oMiss = 0, t7 = 0, t7a = 0, o7s = 0, o7g = 0;
+    for(const g of sel) for(const e of g.events){ if(e.type==='save'||e.type==='p7save') oSv++; else if(e.type==='conceded'||e.type==='p7conceded') oGa++; else if(e.type==='oppMiss') oMiss++;
+      if(e.type==='p7goal'){ t7++; t7a++; } else if(e.type==='p7miss') t7a++;
+      if(e.type==='p7save') o7s++; else if(e.type==='p7conceded') o7g++; }
     const oSh = oSv + oGa + oMiss;
     h += `<div class="card"><b>Quoten Mannschaft</b><div class="gauges">
       ${gauge(tg, ts, 'Wurfquote<small>Tore/Würfe</small>')}
       ${gauge(t7, t7a, '7m-Quote<small>verwandelt</small>')}
       ${gauge(oSv, oSv + oGa, 'Fangquote<small>Paraden/Würfe aufs Tor</small>')}
+      ${gauge(o7s, o7s + o7g, '7m gehalten<small>Gegner-7m</small>')}
       ${gauge(oSv + oMiss, oSh, 'Abwehrquote<small>Gegnerwürfe ohne Tor</small>')}
     </div></div>`; }
   if(S.statsScope === 'game' && sel.length){
@@ -801,9 +805,9 @@ function renderStats(){
   if(gkRows.length || noGk.faced){
     gkRows.sort((a,b) => b.r[S.gkSort] - a.r[S.gkSort]);
     h += `<div class="card"><b>Torhüter</b><div class="tbl-wrap"><table><thead><tr><th>Torhüter</th>` +
-      [['min','Min'],['saves','Paraden'],['ga','Gegentore'],['q','Quote'],['p7save','7m geh.']].map(([k,l]) => `<th data-a="gkSort" data-v="${k}" class="${S.gkSort===k?'on':''}">${l}</th>`).join('') + `</tr></thead><tbody>`;
-    for(const {p, r} of gkRows) h += `<tr class="click"><td data-a="playerDetail" data-id="${p.id}">#${esc(p.number)} ${esc(p.name)}</td><td>${r.min}</td><td><b>${r.saves}</b></td><td>${r.ga}</td><td>${r.q<0?'–':Math.round(r.q*100)+'%'}</td><td>${r.p7save}</td></tr>`;
-    if(noGk.faced) h += `<tr><td class="mute">ohne Zuordnung</td><td>–</td><td>${noGk.saves}</td><td>${noGk.ga}</td><td>${noGk.q<0?'–':Math.round(noGk.q*100)+'%'}</td><td>${noGk.p7save}</td></tr>`;
+      [['min','Min'],['saves','Paraden'],['ga','Gegentore'],['q','Quote'],['p7q','7m geh.']].map(([k,l]) => `<th data-a="gkSort" data-v="${k}" class="${S.gkSort===k?'on':''}">${l}</th>`).join('') + `</tr></thead><tbody>`;
+    for(const {p, r} of gkRows) h += `<tr class="click"><td data-a="playerDetail" data-id="${p.id}">#${esc(p.number)} ${esc(p.name)}</td><td>${r.min}</td><td><b>${r.saves}</b></td><td>${r.ga}</td><td>${r.q<0?'–':Math.round(r.q*100)+'%'}</td><td>${r.p7faced ? r.p7save + '/' + r.p7faced : '–'}</td></tr>`;
+    if(noGk.faced) h += `<tr><td class="mute">ohne Zuordnung</td><td>–</td><td>${noGk.saves}</td><td>${noGk.ga}</td><td>${noGk.q<0?'–':Math.round(noGk.q*100)+'%'}</td><td>${noGk.p7faced ? noGk.p7save + '/' + noGk.p7faced : '–'}</td></tr>`;
     h += `</tbody></table></div></div>`;
   }
   return h;
@@ -836,6 +840,7 @@ function renderPlayer(){
       ${gauge(tot.p7, tot.p7a, '7m-Quote')}
       ${gauge(mine, avail, 'Spielzeitanteil<small>in seinen Spielen</small>', Math.floor(mine/60) + '/' + Math.floor(avail/60) + ' min')}
       ${gk.faced ? gauge(gk.saves, gk.faced, 'Fangquote') : ''}
+      ${gk.p7faced ? gauge(gk.p7save, gk.p7faced, '7m gehalten') : ''}
     </div></div>`; }
   if(gs.length){
     const per = gs.map(g => ({g, r: fieldRow(countsFor([g])[p.id] || {})}));
@@ -1036,14 +1041,14 @@ function sheetPlayerActions(g, pid){
   const p = pById(pid);
   const isGk = court(g).keeper === pid;
   openSheet(`<h2><span class="num ${p.tw||isGk?'tw':''}">${esc(p.number)}</span> ${esc(p.name)}${isGk ? ' <span class="badge">im Tor</span>' : ''}</h2>
-    ${isGk ? `<div class="sec-t" style="margin-top:0">Torwart</div><div class="grid">${['save','p7save','conceded'].map(t => `<button class="act ${EV[t].c}" data-t="${t}">${EV[t].l}</button>`).join('')}</div><div class="sec-t">Feld / Strafen</div>` : ''}
+    ${isGk ? `<div class="sec-t" style="margin-top:0">Torwart</div><div class="grid">${['save','p7save','conceded','p7conceded'].map(t => `<button class="act ${EV[t].c}" data-t="${t}">${EV[t].l}</button>`).join('')}</div><div class="sec-t">Feld / Strafen</div>` : ''}
     <div class="grid">${FIELD_ACTIONS.map(t => `<button class="act ${EV[t].c}" data-t="${t}">${EV[t].l}</button>`).join('')}</div>
     <button class="btn full sec" id="pClose" style="margin-top:12px">Abbrechen</button>`);
   $('#pClose').onclick = closeSheet;
   document.querySelectorAll('#sheet .act').forEach(b => b.onclick = () => { closeSheet(); addEvent(g, pid, b.dataset.t); });
 }
 /* Spielaktionen starten eine stehende Uhr automatisch (nicht: Strafen, Wechsel, Auszeiten) */
-const AUTO_START = {goal:1, miss:1, p7goal:1, p7miss:1, tf:1, steal:1, save:1, p7save:1, conceded:1, oppMiss:1};
+const AUTO_START = {goal:1, miss:1, p7goal:1, p7miss:1, tf:1, steal:1, save:1, p7save:1, conceded:1, p7conceded:1, oppMiss:1};
 function maybeAutoStart(g, types){
   const c = g.clock;
   if(S.team.autoClock === false || c.running || g.status === 'done' || !types.some(t => AUTO_START[t])) return null;
@@ -1285,7 +1290,7 @@ document.addEventListener('click', async ev => {
     case 'timeout': if(g) sheetTimeout(g); break;
     case 'oppMiss': if(g) addEvents(g, [{pid:null, type:'oppMiss'}], 'Fehlwurf Gegner'); break;
     case 'subMode': S.subMode = !S.subMode; S.subSel = null; render(); break;
-    case 'gkEv': if(g){ const k = court(g).keeper; if(!k && el.dataset.t !== 'conceded'){ toast('Bitte erst den Torwart wählen'); break; } addEvent(g, k || null, el.dataset.t); } break;
+    case 'gkEv': if(g){ const k = court(g).keeper; if(!k && el.dataset.t !== 'conceded' && el.dataset.t !== 'p7conceded'){ toast('Bitte erst den Torwart wählen'); break; } addEvent(g, k || null, el.dataset.t); } break;
     case 'delEv': if(g){ const e = g.events.find(x => x.id === id);
       if(e && await ask(`„${EV[e.type].l}“ von ${pLabel(e.pid)} löschen?`)){ g.events = g.events.filter(x => x.id !== id); saveGame(g); render(); if(!$('#sheet').classList.contains('hidden')) sheetAllEvents(g); } } break;
     case 'allEvents': if(g) sheetAllEvents(g); break;
