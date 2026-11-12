@@ -73,6 +73,8 @@ label.chk input{width:22px;height:22px}
 .act.y{background:var(--y2);color:var(--y)}.act.r{background:#fecaca;color:var(--r)}
 .act.n{background:var(--n2);color:var(--n)}
 .act:active{transform:scale(.97)}
+.act.subb,.act.fillb{background:#fff;color:var(--ink);box-shadow:0 1px 3px rgba(0,0,0,.15)}
+.act.subb b,.act.fillb b{color:var(--pri)}
 .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
 @media(min-width:520px){.grid{grid-template-columns:repeat(4,1fr)}}
 .tile{background:#fff;border-radius:14px;padding:10px 6px;text-align:center;box-shadow:0 1px 2px rgba(0,0,0,.08);min-height:86px}
@@ -685,7 +687,7 @@ function renderLive(g){
   h += `<div class="subbar ${S.subMode?'on':''}">
       <div class="grow">${S.subMode
         ? '<b>Wechselmodus</b><div style="font-size:13px">Bank antippen, dann den Feldspieler, der rausgeht. Feldspieler allein antippen = raus.</div>'
-        : `<b>Feld: ${onCount}/${fs}${keeperP ? ' + TW' : ' – kein TW'}</b><span class="hint"> · Spieler antippen = erfassen · von der Bank auf einen Feldspieler ziehen = wechseln</span>`}</div>
+        : `<b>Feld: ${onCount}/${fs}${keeperP ? ' + TW' : ' – kein TW'}</b><span class="hint"> · Feldspieler antippen = erfassen · Bank antippen oder auf einen Feldspieler ziehen = wechseln</span>`}</div>
       <button class="btn sm ${S.subMode?'':'sec'}" data-a="subMode">${S.subMode ? '✓ Fertig' : '⇄ Wechselmodus'}</button></div>`;
   if(!onCount && !g.events.some(e => e.type === 'in'))
     h += `<div class="note">Startaufstellung: Spieler von der Bank auf die freien Plätze ziehen (oder Wechselmodus und Bank-Spieler antippen).</div>`;
@@ -1087,10 +1089,31 @@ function doOut(g, pid){ addEvents(g, [{pid, type:'out'}], `↓ Raus: ${nm(pid)}`
 function doGk(g, pid){ addEvents(g, [{pid: pid || null, type:'gk'}], pid ? `Ins Tor: ${nm(pid)}` : 'Kein Torwart'); }
 
 /* Tippen / Ziehen auf dem Spielfeld */
+/* Bank-Spieler angetippt: Wechselpartner anbieten */
+function sheetSubFor(g, inPid){
+  const st = court(g), T = playTime(g), susp = suspendedNow(g), fs = S.team.fieldSize || 6;
+  const pIn = pById(inPid);
+  const onField = st.slots.map((id, i) => ({id, i})).filter(x => x.id && pById(x.id));
+  const free = st.field.size < fs;
+  const keeper = st.keeper ? pById(st.keeper) : null;
+  const mins = id => { const t = T[id] || {f:0, g:0}; return fmtMin(t.f + t.g); };
+  openSheet(`<h2><span class="num ${pIn.tw?'tw':''}">${esc(pIn.number)}</span> ${esc(fullName(pIn.first, pIn.last) || pIn.name)} einwechseln – für wen?</h2>
+    ${susp[inPid] ? '<div class="note">Achtung: Die Zeitstrafe dieses Spielers läuft noch.</div>' : ''}
+    <div class="grid">${onField.map(x => { const p = pById(x.id); return `<button class="act n subb" data-id="${p.id}"><b style="font-size:22px">${esc(p.number)}</b><br>${esc(shortName(p))}<br><small style="font-weight:400">${mins(p.id)} gespielt</small></button>`; }).join('')}</div>
+    ${free ? `<button class="btn full" id="subFree" style="margin-top:10px">Auf freien Platz (${st.field.size}/${fs} auf dem Feld)</button>` : ''}
+    <button class="btn full sec" id="subGk" style="margin-top:10px">${keeper ? `Ins Tor für #${esc(keeper.number)} ${esc(shortName(keeper))}` : 'Ins Tor'}</button>
+    <div class="row" style="margin-top:10px"><button class="btn ghost" id="subAct" style="padding-left:0">Strafe / Aktion erfassen ›</button><span class="grow"></span><button class="btn sec" id="subClose">Abbrechen</button></div>`);
+  document.querySelectorAll('.subb').forEach(b => b.onclick = () => { closeSheet(); doSwap(g, b.dataset.id, inPid); });
+  if(free) $('#subFree').onclick = () => { closeSheet(); doIn(g, inPid); };
+  $('#subGk').onclick = () => { closeSheet(); doGk(g, inPid); };
+  $('#subAct').onclick = () => sheetPlayerActions(g, inPid);
+  $('#subClose').onclick = closeSheet;
+}
 function chipTap(g, d){
   const st = court(g), fs = S.team.fieldSize || 6;
   if(!S.subMode){
-    if(d.pid) sheetPlayerActions(g, d.pid);
+    if(d.pid && d.zone === 'bench') sheetSubFor(g, d.pid);
+    else if(d.pid) sheetPlayerActions(g, d.pid);
     else if(d.zone === 'slot' || d.zone === 'goal') toast('Spieler von der Bank hierher ziehen');
     return;
   }
