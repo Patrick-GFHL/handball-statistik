@@ -420,7 +420,32 @@ let loaded = false;
 function done(){ if(loaded) return; loaded = true; $('#loading').classList.add('hidden'); render(); if(syncCfg) syncNow(); }
 
 /* ---------- Hilfen ---------- */
-const players = () => [...S.team.players].sort((a,b) => (+a.number||999) - (+b.number||999) || a.name.localeCompare(b.name));
+function splitName(full){
+  full = String(full || '').replace(/\s+/g, ' ').trim();
+  if(full.includes(',')){ const [l, f] = full.split(',', 2).map(x => x.trim()); if(l && f) return {first:f, last:l}; full = full.replace(/,/g, ' ').trim(); }
+  const parts = full.split(' ');
+  return parts.length > 1 ? {first:parts.slice(0, -1).join(' '), last:parts[parts.length - 1]} : {first:full, last:''};
+}
+const fullName = (first, last) => [first, last].filter(Boolean).join(' ');
+function normPlayers(){ for(const p of S.team.players) if(p.first === undefined){ const n = splitName(p.name); p.first = n.first; p.last = n.last; } }
+function shortName(p){
+  if(!p.first) return p.name;
+  const dup = S.team.players.some(x => x !== p && !x.inactive && x.first === p.first);
+  return dup && p.last ? `${p.first} ${p.last[0]}.` : p.first;
+}
+let pSort = 'number';
+try{ pSort = localStorage.getItem('hbstats_psort') || 'number'; }catch(e){}
+function setPSort(v){ pSort = v; try{ localStorage.setItem('hbstats_psort', v); }catch(e){} }
+const cmpNum = (a,b) => (+a.number||999) - (+b.number||999);
+const cmpStr = (x,y) => (x||'').localeCompare(y||'', 'de', {sensitivity:'base'});
+function cmpPlayers(a, b){
+  if(pSort === 'first') return cmpStr(a.first, b.first) || cmpStr(a.last, b.last) || cmpNum(a,b);
+  if(pSort === 'last') return cmpStr(a.last, b.last) || cmpStr(a.first, b.first) || cmpNum(a,b);
+  return cmpNum(a,b) || cmpStr(a.last, b.last);
+}
+const players = () => { normPlayers(); return [...S.team.players].sort(cmpPlayers); };
+const sortSeg = act => `<div class="seg" style="margin-bottom:8px"><span class="mute" style="align-self:center;padding:0 6px;font-size:13px">Sortieren:</span>
+  ${[['number','Nr.'],['first','Vorname'],['last','Nachname']].map(([v,l]) => `<button type="button" data-a="${act}" data-v="${v}" class="${pSort===v?'on':''}">${l}</button>`).join('')}</div>`;
 const pById = id => S.team.players.find(p => p.id === id);
 const pLabel = id => { const p = pById(id); return p ? `#${p.number} ${p.name}` : (id ? 'Gelöschter Spieler' : 'ohne Zuordnung'); };
 const gamesSorted = () => Object.values(S.games).sort((a,b) => (b.date||'').localeCompare(a.date||'') || b.createdAt - a.createdAt);
@@ -570,13 +595,14 @@ function renderRoster(){
   const ps = players();
   let h = `<div class="card"><div class="row"><div class="grow"><b>Mannschaft</b><div class="mute">${esc(S.team.name)} · Halbzeit ${S.team.halfMin} min · ${S.team.fieldSize || 6}+1 auf dem Feld · 2 Min: ${S.team.fillOnTwo !== false ? 'auffüllen' : 'Unterzahl'}</div></div>
     <button class="btn sm sec" data-a="editTeam">Ändern</button></div></div>`;
+  if(ps.length > 1) h += sortSeg('rosterSort');
   h += `<div class="row" style="margin-bottom:10px;gap:8px"><button class="btn grow" data-a="editPlayer">＋ Spieler hinzufügen</button><button class="btn sec" data-a="bulkPlayers">Liste eingeben</button></div>`;
   if(!ps.length) h += `<div class="empty">Noch keine Spieler.</div>`;
   else{
     h += `<div class="card list">`;
     for(const p of ps){
       h += `<div class="item"><span class="num ${p.tw?'tw':''}">${esc(p.number)}</span>
-        <div class="grow"><div style="font-weight:600">${esc(p.name)}</div><div class="mute">${p.tw?'Torwart':'Feldspieler'}${p.inactive?' · inaktiv':''}</div></div>
+        <div class="grow"><div>${esc(p.first)} <b>${esc(p.last)}</b></div><div class="mute">${p.tw?'Torwart':'Feldspieler'}${p.inactive?' · inaktiv':''}</div></div>
         <button class="btn sm ghost" data-a="editPlayer" data-id="${p.id}">Bearbeiten</button></div>`;
     }
     h += `</div>`;
@@ -612,11 +638,12 @@ function chip(p, zone, T, c, extraCls = '', style = ''){
   const r = fieldRow(c[p.id] || {});
   const sub = [r.goals ? r.goals + ' T' : '', r.two ? r.two + '×2′' : ''].filter(Boolean).join(' · ');
   return `<div class="chip ${p.tw || zone === 'gk' ? 'tw' : ''} ${extraCls}" data-pid="${p.id}" data-zone="${zone}" style="${style}">
-    <b>${esc(p.number)}</b><span class="cn">${esc(p.name)}</span><span class="cm"><span data-pt="${p.id}">${fmtMin(t.f + t.g)}</span>${sub ? ' · ' + sub : ''}</span></div>`;
+    <b>${esc(p.number)}</b><span class="cn">${esc(shortName(p))}</span><span class="cm"><span data-pt="${p.id}">${fmtMin(t.f + t.g)}</span>${sub ? ' · ' + sub : ''}</span></div>`;
 }
 function renderLive(g){
   const sc = score(g);
-  const lineup = (g.lineup || []).map(pById).filter(Boolean).sort((a,b) => (+a.number||999) - (+b.number||999));
+  normPlayers();
+  const lineup = (g.lineup || []).map(pById).filter(Boolean).sort(cmpPlayers);
   const c = countsFor([g]);
   const st = court(g), T = playTime(g);
   const kOpts = lineup.map(p => `<option value="${p.id}" ${st.keeper===p.id?'selected':''}>#${esc(p.number)} ${esc(p.name)}</option>`).join('');
@@ -841,18 +868,20 @@ function toast(msg, undo){
 
 function sheetPlayerEdit(id){
   if(!id) return sheetPlayerNew();
+  normPlayers();
   const p = pById(id);
   openSheet(`<h2>Spieler bearbeiten</h2>
-    <div class="row"><label class="field" style="width:90px"><span>Nummer</span><input id="fNum" inputmode="numeric" value="${esc(p.number)}"></label>
-    <label class="field grow"><span>Name</span><input id="fName" value="${esc(p.name)}" placeholder="Vorname"></label></div>
+    <div class="row"><label class="field" style="width:80px"><span>Nummer</span><input id="fNum" inputmode="numeric" value="${esc(p.number)}"></label>
+    <label class="field grow"><span>Vorname</span><input id="fFirst" value="${esc(p.first)}"></label></div>
+    <label class="field"><span>Nachname</span><input id="fLast" value="${esc(p.last)}"></label>
     <label class="chk"><input type="checkbox" id="fTw" ${p.tw?'checked':''}> Torwart</label>
     <label class="chk"><input type="checkbox" id="fIn" ${p.inactive?'checked':''}> inaktiv (wird bei neuen Spielen nicht vorausgewählt)</label>
     <button class="btn full" id="fSave" style="margin-top:8px">Speichern</button>
     <button class="btn full danger" id="fDel" style="margin-top:8px">Spieler löschen</button>`);
   $('#fSave').onclick = () => {
-    const name = $('#fName').value.trim(), number = $('#fNum').value.trim();
-    if(!name){ $('#fName').focus(); return; }
-    Object.assign(p, {name, number, tw:$('#fTw').checked, inactive:$('#fIn').checked});
+    const first = $('#fFirst').value.trim(), last = $('#fLast').value.trim(), number = $('#fNum').value.trim();
+    if(!first && !last){ $('#fFirst').focus(); return; }
+    Object.assign(p, {first, last, name:fullName(first, last), number, tw:$('#fTw').checked, inactive:$('#fIn').checked});
     saveTeam(); closeSheet(); render();
   };
   $('#fDel').onclick = async () => {
@@ -866,31 +895,34 @@ function sheetPlayerEdit(id){
 function sheetPlayerNew(){
   const added = [];
   openSheet(`<h2>Spieler hinzufügen</h2>
-    <div class="row"><label class="field" style="width:90px"><span>Nummer</span><input id="fNum" inputmode="numeric" enterkeyhint="next"></label>
-    <label class="field grow"><span>Name</span><input id="fName" placeholder="Vorname" enterkeyhint="done"></label></div>
+    <div class="row"><label class="field" style="width:80px"><span>Nummer</span><input id="fNum" inputmode="numeric" enterkeyhint="next"></label>
+    <label class="field grow"><span>Vorname</span><input id="fFirst" enterkeyhint="next"></label></div>
+    <label class="field"><span>Nachname</span><input id="fLast" enterkeyhint="done"></label>
     <label class="chk"><input type="checkbox" id="fTw"> Torwart</label>
     <button class="btn full" id="fNext" style="margin-top:8px">Speichern & nächster</button>
     <button class="btn full sec" id="fDone" style="margin-top:8px">Fertig</button>
     <div id="fAdded" class="mute" style="margin-top:10px"></div>
     <button class="btn ghost" id="fBulk" style="margin-top:4px;padding-left:0">Stattdessen alle als Liste eingeben ›</button>`);
-  const focusNum = () => setTimeout(() => { const f = $('#fNum'); if(f) f.focus(); }, 30);
+  const focusNum = () => { const f = $('#fNum'); if(f) f.focus(); };
   focusNum();
   const commit = () => {
-    const name = $('#fName').value.trim(), number = $('#fNum').value.trim();
-    if(!name){ $('#fName').focus(); return false; }
+    const first = $('#fFirst').value.trim(), last = $('#fLast').value.trim(), number = $('#fNum').value.trim();
+    if(!first && !last){ $('#fFirst').focus(); return false; }
     if(number && S.team.players.some(x => String(x.number) === number && !x.inactive)) toast(`Achtung: Nummer ${number} ist schon vergeben`);
-    S.team.players.push({id:uid(), name, number, tw:$('#fTw').checked, inactive:false});
+    S.team.players.push({id:uid(), first, last, name:fullName(first, last), number, tw:$('#fTw').checked, inactive:false});
     saveTeam(); render();
-    added.push(`#${number} ${name}`);
+    added.push(`#${number} ${fullName(first, last)}`);
     $('#fAdded').textContent = `Hinzugefügt (${added.length}): ` + added.join(', ');
-    $('#fName').value = ''; $('#fNum').value = ''; $('#fTw').checked = false;
+    $('#fFirst').value = ''; $('#fLast').value = ''; $('#fNum').value = ''; $('#fTw').checked = false;
     return true;
   };
+  const enter = (sel, fn) => $(sel).addEventListener('keydown', e => { if(e.key === 'Enter'){ e.preventDefault(); fn(); } });
+  enter('#fNum', () => $('#fFirst').focus());
+  enter('#fFirst', () => $('#fLast').focus());
+  enter('#fLast', () => { if(commit()) focusNum(); });
   $('#fNext').onclick = () => { if(commit()) focusNum(); };
-  $('#fNum').addEventListener('keydown', e => { if(e.key === 'Enter'){ e.preventDefault(); $('#fName').focus(); } });
-  $('#fName').addEventListener('keydown', e => { if(e.key === 'Enter'){ e.preventDefault(); if(commit()) focusNum(); } });
   $('#fDone').onclick = () => {
-    if($('#fName').value.trim()) commit();
+    if($('#fFirst').value.trim() || $('#fLast').value.trim()) commit();
     closeSheet(); if(added.length) toast(`${added.length} Spieler hinzugefügt`);
   };
   $('#fBulk').onclick = sheetPlayerBulk;
@@ -907,15 +939,15 @@ function parsePlayerLines(txt){
     let m = line.match(/^#?\s*(\d{1,3})\s*[.,;:\-–)]?\s+(.*)$/) || line.match(/^(\d{1,3})$/);
     if(m){ number = m[1]; line = m[2] || ''; }
     else if((m = line.match(/^(.*?)[\s,;:\-–(]+#?(\d{1,3})\)?$/))){ line = m[1]; number = m[2]; }
-    const name = line.replace(/[,;:\-–]+$/, '').replace(/\s+/g, ' ').trim();
-    if(name) out.push({name, number, tw});
+    const raw = line.replace(/[,;:\-–]+$/, '').replace(/\s+/g, ' ').trim();
+    if(raw){ const n = splitName(raw); out.push({first:n.first, last:n.last, name:fullName(n.first, n.last), number, tw}); }
   }
   return out;
 }
 function sheetPlayerBulk(){
   openSheet(`<h2>Mehrere Spieler eingeben</h2>
-    <div class="mute" style="margin-bottom:8px">Eine Zeile pro Spieler: Nummer und Name. „TW“ dahinter markiert Torhüter. Du kannst die Liste auch aus einer Notiz oder WhatsApp einfügen.</div>
-    <textarea id="bTxt" rows="10" placeholder="1 Ben TW&#10;4 Ella&#10;7 Mia&#10;10 Leo&#10;12 Tom TW"></textarea>
+    <div class="mute" style="margin-bottom:8px">Eine Zeile pro Spieler: Nummer, Vorname, Nachname (oder „Nachname, Vorname“). „TW“ dahinter markiert Torhüter. Du kannst die Liste auch aus einer Notiz oder WhatsApp einfügen.</div>
+    <textarea id="bTxt" rows="10" placeholder="2 Piet Kassnel&#10;3 Vincent Schmid&#10;12 Ron Pfau TW&#10;Militzer, Constantin 5"></textarea>
     <div id="bPrev" class="mute" style="margin:8px 0"></div>
     <button class="btn full" id="bGo">Spieler übernehmen</button>
     <button class="btn full sec" id="bCancel" style="margin-top:8px">Abbrechen</button>`);
@@ -923,7 +955,7 @@ function sheetPlayerBulk(){
     const list = parsePlayerLines($('#bTxt').value);
     const dup = list.filter(x => x.number && S.team.players.some(p => String(p.number) === x.number && !p.inactive)).map(x => x.number);
     $('#bPrev').innerHTML = list.length
-      ? `<b>${list.length} Spieler erkannt:</b> ` + list.map(x => `${x.number ? '#' + esc(x.number) + ' ' : ''}${esc(x.name)}${x.tw ? ' (TW)' : ''}`).join(', ')
+      ? `<b>${list.length} Spieler erkannt:</b> ` + list.map(x => `${x.number ? '#' + esc(x.number) + ' ' : ''}${esc(x.first)} <b>${esc(x.last)}</b>${x.tw ? ' (TW)' : ''}`).join(', ')
         + (dup.length ? `<br><span style="color:var(--b)">Nummer schon vergeben: ${dup.join(', ')}</span>` : '')
       : '';
     $('#bGo').textContent = list.length ? `${list.length} Spieler übernehmen` : 'Spieler übernehmen';
@@ -934,7 +966,7 @@ function sheetPlayerBulk(){
   $('#bGo').onclick = () => {
     const list = parsePlayerLines($('#bTxt').value);
     if(!list.length){ $('#bTxt').focus(); return; }
-    list.forEach(x => S.team.players.push({id:uid(), name:x.name, number:x.number, tw:x.tw, inactive:false}));
+    list.forEach(x => S.team.players.push({id:uid(), first:x.first, last:x.last, name:x.name, number:x.number, tw:x.tw, inactive:false}));
     saveTeam(); closeSheet(); render(); toast(`${list.length} Spieler hinzugefügt`);
   };
 }
@@ -963,13 +995,25 @@ function sheetGame(id){
     <label class="field"><span>Gegner</span><input id="gOpp" value="${esc(g ? g.opponent : '')}" placeholder="z. B. TSV Musterstadt"></label>
     <div class="row"><label class="field grow"><span>Datum</span><input type="date" id="gDate" value="${g ? g.date : today}"></label>
     <label class="field grow"><span>Ort</span><select id="gHome"><option value="1">Heim</option><option value="0" ${g && !g.home ? 'selected' : ''}>Auswärts</option></select></label></div>
-    <div class="field"><span>Spielkader</span><div class="card" style="padding:4px 12px;margin:0">
-    ${players().map(p => `<label class="chk"><input type="checkbox" class="gP" value="${p.id}" ${lineup.includes(p.id)?'checked':''}> <span class="num ${p.tw?'tw':''}" style="min-width:28px;height:28px">${esc(p.number)}</span> ${esc(p.name)}</label>`).join('') || '<div class="mute" style="padding:8px 0">Noch keine Spieler im Kader.</div>'}
-    </div></div>
+    <div class="field"><div class="row"><span class="grow mute" style="font-size:13px">Spielkader <span id="gCnt"></span></span>
+      <button type="button" class="btn sm ghost" id="gAll">Alle</button><button type="button" class="btn sm ghost" id="gNone">Keine</button></div>
+      ${sortSeg('lineupSort')}
+      <div class="card" style="padding:4px 12px;margin:0" id="gList"></div></div>
     <button class="btn full" id="gSave">${g ? 'Speichern' : 'Spiel anlegen & erfassen'}</button>
     ${g ? `<button class="btn full danger" id="gDel" style="margin-top:8px">Spiel löschen</button>` : ''}`);
+  let chosen = new Set(lineup);
+  const drawList = () => {
+    $('#gList').innerHTML = players().map(p => `<label class="chk"><input type="checkbox" class="gP" value="${p.id}" ${chosen.has(p.id)?'checked':''}> <span class="num ${p.tw?'tw':''}" style="min-width:28px;height:28px">${esc(p.number)}</span> <span>${esc(p.first)} <b>${esc(p.last)}</b></span>${p.inactive ? ' <span class="mute">(inaktiv)</span>' : ''}</label>`).join('') || '<div class="mute" style="padding:8px 0">Noch keine Spieler im Kader.</div>';
+    $('#gCnt').textContent = `(${chosen.size} ausgewählt)`;
+    document.querySelectorAll('#sheet [data-a=lineupSort]').forEach(b => b.classList.toggle('on', b.dataset.v === pSort));
+  };
+  drawList();
+  $('#gList').addEventListener('change', e => { if(e.target.classList.contains('gP')){ e.target.checked ? chosen.add(e.target.value) : chosen.delete(e.target.value); $('#gCnt').textContent = `(${chosen.size} ausgewählt)`; } });
+  $('#gAll').onclick = () => { chosen = new Set(S.team.players.filter(p => !p.inactive).map(p => p.id)); drawList(); };
+  $('#gNone').onclick = () => { chosen = new Set(); drawList(); };
+  document.querySelectorAll('#sheet [data-a=lineupSort]').forEach(b => b.onclick = ev => { ev.stopPropagation(); setPSort(b.dataset.v); drawList(); });
   $('#gSave').onclick = () => {
-    const sel = [...document.querySelectorAll('.gP:checked')].map(x => x.value);
+    const sel = [...chosen];
     const data = {opponent:$('#gOpp').value.trim() || 'Gegner', date:$('#gDate').value || today, home:$('#gHome').value === '1', lineup:sel};
     if(g){ Object.assign(g, data); saveGame(g); closeSheet(); render(); }
     else{
@@ -1123,7 +1167,7 @@ function sheetFill(g, outPid, slot, type){
     .sort((a,b) => (+a.number||999) - (+b.number||999));
   if(!bench.length) return;
   openSheet(`<h2>${type === 'red' ? 'Rote Karte' : '2 Minuten'} für ${esc(nm(outPid))} – wer füllt auf?</h2>
-    <div class="grid">${bench.map(p => `<button class="act n fillb" data-id="${p.id}"${susp[p.id] ? ' style="opacity:.5"' : ''}><b style="font-size:20px">${esc(p.number)}</b><br>${esc(p.name)}${susp[p.id] ? '<br><small>Strafe läuft</small>' : ''}</button>`).join('')}</div>
+    <div class="grid">${bench.map(p => `<button class="act n fillb" data-id="${p.id}"${susp[p.id] ? ' style="opacity:.5"' : ''}><b style="font-size:20px">${esc(p.number)}</b><br>${esc(shortName(p))}${susp[p.id] ? '<br><small>Strafe läuft</small>' : ''}</button>`).join('')}</div>
     <button class="btn full sec" id="fillLater" style="margin-top:12px">Später / nicht auffüllen</button>`);
   $('#fillLater').onclick = closeSheet;
   document.querySelectorAll('.fillb').forEach(b => b.onclick = () => { closeSheet(); doIn(g, b.dataset.id, slot); });
@@ -1213,6 +1257,8 @@ document.addEventListener('click', async ev => {
     case 'import': sheetImport(); break;
     case 'sync': sheetSync(); break;
     case 'bulkPlayers': sheetPlayerBulk(); break;
+    case 'rosterSort': setPSort(el.dataset.v); render(); break;
+    case 'lineupSort': break;
     case 'timeout': if(g) sheetTimeout(g); break;
     case 'oppMiss': if(g) addEvents(g, [{pid:null, type:'oppMiss'}], 'Fehlwurf Gegner'); break;
     case 'subMode': S.subMode = !S.subMode; S.subSel = null; render(); break;
