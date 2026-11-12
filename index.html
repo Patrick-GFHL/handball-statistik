@@ -850,7 +850,7 @@ function renderPlayer(){
 }
 
 /* ---------- Sheets / Dialoge ---------- */
-function openSheet(html){ const s = $('#sheet'); s.innerHTML = `<div class="panel">${html}</div>`; s.classList.remove('hidden'); }
+function openSheet(html){ $('#toast').classList.add('hidden'); const s = $('#sheet'); s.innerHTML = `<div class="panel">${html}</div>`; s.classList.remove('hidden'); }
 function closeSheet(){ const s = $('#sheet'); s.classList.add('hidden'); s.innerHTML = ''; }
 $('#sheet').addEventListener('click', e => { if(e.target.id === 'sheet') closeSheet(); });
 function ask(msg, okLabel = 'Löschen'){
