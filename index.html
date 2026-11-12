@@ -133,7 +133,9 @@ label.chk input{width:22px;height:22px}
   .sheet{align-items:center}
   .sheet .panel{max-width:560px;border-radius:18px;padding-bottom:18px}
 }
-.stopped{text-align:center;font-size:12px;color:#fca5a5;margin-top:6px}
+.stopped{display:flex;align-items:center;justify-content:center;gap:12px;flex-wrap:wrap;margin-top:10px;background:#dc2626;color:#fff;border-radius:12px;padding:10px 12px;font-weight:800;letter-spacing:.3px;animation:blink 1.2s ease-in-out infinite}
+.stopped button{background:#fff;color:#dc2626;padding:8px 14px;font-weight:800}
+@keyframes blink{0%,100%{background:#dc2626}50%{background:#991b1b}}
 .tile:active{transform:scale(.97)}
 .ev{display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--line);font-size:14px}
 .ev:last-child{border-bottom:0}
@@ -201,7 +203,7 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt
 const clone = o => JSON.parse(JSON.stringify(o));
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const $ = s => document.querySelector(s);
-const defaultTeam = () => ({name:'Meine Mannschaft', halfMin:20, fieldSize:6, fillOnTwo:true, players:[]});
+const defaultTeam = () => ({name:'Meine Mannschaft', halfMin:20, fieldSize:6, fillOnTwo:true, autoClock:true, players:[]});
 
 /* ---------- Zustand ---------- */
 const S = {
@@ -648,7 +650,7 @@ function renderLive(g){
         ${done ? '' : `<div class="clock" style="margin-top:6px"><button data-a="timeout">⏱ Auszeit</button><span style="font-size:13px;color:#cbd5e1">${toInfo(g)}</span></div>`}
       </div>
     </div>
-    ${!done && !g.clock.running ? '<div class="stopped">Uhr steht – Spielzeit wird nicht gezählt</div>' : ''}
+    ${!done && !g.clock.running ? `<div class="stopped"><span>⚠ ACHTUNG – UHR LÄUFT NICHT</span><button data-a="clockToggle">▶ Uhr starten</button></div>` : ''}
     <div class="sync" id="sync" style="color:#94a3b8;justify-content:flex-end"></div>
   </div>`;
   if(done) h += `<div class="note">Spiel ist beendet. Du kannst trotzdem noch Ereignisse nachtragen oder löschen. <button class="btn sm sec" data-a="reopen" style="margin-left:6px">Wieder öffnen</button></div>`;
@@ -942,12 +944,14 @@ function sheetTeam(){
     <label class="field"><span>Länge einer Halbzeit (Minuten)</span><input id="tHalf" inputmode="numeric" value="${esc(S.team.halfMin)}"></label>
     <label class="field"><span>Feldspieler auf dem Feld (ohne Torwart)</span><input id="tField" inputmode="numeric" value="${esc(S.team.fieldSize || 6)}"></label>
     <label class="chk"><input type="checkbox" id="tFill" ${S.team.fillOnTwo !== false ? 'checked' : ''}> Bei 2 Minuten darf aufgefüllt werden (bis D-Jugend)</label>
+    <label class="chk"><input type="checkbox" id="tAuto" ${S.team.autoClock !== false ? 'checked' : ''}> Uhr bei Spielaktion (Tor, Wurf, Parade …) automatisch starten</label>
     <button class="btn full" id="tSave">Speichern</button>`);
   $('#tSave').onclick = () => {
     S.team.name = $('#tName').value.trim() || 'Meine Mannschaft';
     S.team.halfMin = Math.max(5, Math.min(40, parseInt($('#tHalf').value) || 20));
     S.team.fieldSize = Math.max(3, Math.min(8, parseInt($('#tField').value) || 6));
     S.team.fillOnTwo = $('#tFill').checked;
+    S.team.autoClock = $('#tAuto').checked;
     saveTeam(); closeSheet(); render();
   };
 }
@@ -992,7 +996,17 @@ function sheetPlayerActions(g, pid){
   $('#pClose').onclick = closeSheet;
   document.querySelectorAll('#sheet .act').forEach(b => b.onclick = () => { closeSheet(); addEvent(g, pid, b.dataset.t); });
 }
+/* Spielaktionen starten eine stehende Uhr automatisch (nicht: Strafen, Wechsel, Auszeiten) */
+const AUTO_START = {goal:1, miss:1, p7goal:1, p7miss:1, tf:1, steal:1, save:1, p7save:1, conceded:1, oppMiss:1};
+function maybeAutoStart(g, types){
+  const c = g.clock;
+  if(S.team.autoClock === false || c.running || g.status === 'done' || !types.some(t => AUTO_START[t])) return null;
+  const prev = clone(c);
+  c.startedAt = Date.now(); c.running = true;
+  return prev;
+}
 function addEvent(g, pid, type){
+  const prevClock = maybeAutoStart(g, [type]);
   const base = {half:g.clock.half, t:clockSec(g), at:Date.now()};
   const added = [{id:uid(), pid:pid || null, type, ...base}];
   let suffix = '';
@@ -1005,16 +1019,19 @@ function addEvent(g, pid, type){
   if(fillSlot != null && (type === 'red' || S.team.fillOnTwo !== false)) setTimeout(() => sheetFill(g, pid, fillSlot, type), 0);
   if(navigator.vibrate) try{ navigator.vibrate(30); }catch(_){}
   const who = (type === 'to' || type === 'toOpp') ? fmtClock(base.t) + ' – Uhr angehalten' : type === 'gk' ? (pid ? pLabel(pid) : 'kein Torwart') : (pid ? pLabel(pid) : 'ohne Torwart');
-  toast(`${EV[type].l} · ${who}${suffix}`, () => {
-    const ids = added.map(x => x.id); g.events = g.events.filter(x => !ids.includes(x.id)); saveGame(g); render();
+  toast(`${EV[type].l} · ${who}${suffix}${prevClock ? ' · ▶ Uhr gestartet' : ''}`, () => {
+    const ids = added.map(x => x.id); g.events = g.events.filter(x => !ids.includes(x.id));
+    if(prevClock) g.clock = prevClock;
+    saveGame(g); render();
   });
 }
 function addEvents(g, specs, label){
+  const prevClock = maybeAutoStart(g, specs.map(x => x.type));
   const base = {half:g.clock.half, t:clockSec(g), at:Date.now()};
   const added = specs.map(x => Object.assign({id:uid(), ...base}, x));
   g.events.push(...added); saveGame(g); render();
   if(navigator.vibrate) try{ navigator.vibrate(30); }catch(_){}
-  toast(label, () => { const ids = added.map(x => x.id); g.events = g.events.filter(x => !ids.includes(x.id)); saveGame(g); render(); });
+  toast(label + (prevClock ? ' · ▶ Uhr gestartet' : ''), () => { const ids = added.map(x => x.id); g.events = g.events.filter(x => !ids.includes(x.id)); if(prevClock) g.clock = prevClock; saveGame(g); render(); });
 }
 const nm = id => { const p = pById(id); return p ? '#' + p.number + ' ' + p.name : '?'; };
 function doSwap(g, outId, inId){
