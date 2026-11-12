@@ -157,6 +157,11 @@ th{font-size:12px;color:var(--mute);font-weight:600;cursor:pointer;user-select:n
 th.on{color:var(--pri)}
 th:first-child,td:first-child{text-align:left;position:sticky;left:0;background:#fff}
 tr.click td:first-child{color:var(--pri);font-weight:600}
+.gauges{display:grid;grid-template-columns:repeat(auto-fill,minmax(104px,1fr));gap:10px;margin-top:8px}
+.gauge{text-align:center}
+.gauge svg{width:100%;max-width:120px;display:block;margin:0 auto}
+.gauge .gl{font-size:13px;font-weight:600;margin-top:-2px;line-height:1.2}
+.gauge .gl small{display:block;font-weight:400;color:var(--mute);font-size:11px}
 .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:10px}
 .kpi{background:#fff;border-radius:12px;padding:10px;text-align:center}
 .kpi b{display:block;font-size:22px}
@@ -315,6 +320,23 @@ function score(g){
   return {us, them};
 }
 const pct = (a,b) => b ? Math.round(a/b*100) + '%' : '–';
+/* Dreiviertelkreis (unten offen): grün gefüllt nach Anteil */
+function gauge(num, den, label, sub){
+  const has = den > 0, p = has ? Math.max(0, Math.min(1, num / den)) : 0;
+  const C = 2 * Math.PI * 40, L = C * 0.75;
+  return `<div class="gauge"><svg viewBox="0 0 100 92" role="img" aria-label="${esc(label)} ${has ? Math.round(p*100) + '%' : 'keine Daten'}">
+    <circle cx="50" cy="50" r="40" fill="none" stroke="#e5e7eb" stroke-width="10" stroke-linecap="round" stroke-dasharray="${L} ${C}" transform="rotate(135 50 50)"/>
+    ${has && p > 0 ? `<circle cx="50" cy="50" r="40" fill="none" stroke="#16a34a" stroke-width="10" stroke-linecap="round" stroke-dasharray="${L * p} ${C}" transform="rotate(135 50 50)"/>` : ''}
+    <text x="50" y="56" text-anchor="middle" font-size="21" font-weight="800" fill="${has ? '#111827' : '#9ca3af'}">${has ? Math.round(p*100) + '%' : '–'}</text>
+    <text x="50" y="88" text-anchor="middle" font-size="11" fill="#6b7280">${has ? (sub != null ? sub : num + '/' + den) : ''}</text>
+  </svg><div class="gl">${label}</div></div>`;
+}
+function gameLen(g){
+  const hm = S.team.halfMin * 60, now = clockSec(g);
+  const h1 = g.clock.half === 1 ? now : (g.clock.h1End != null ? g.clock.h1End : hm);
+  const h2 = g.clock.half === 2 ? Math.max(0, now - hm) : 0;
+  return h1 + h2;
+}
 
 /* ---------- Statistik ---------- */
 /* Wer steht auf dem Feld? Wird aus den Wechsel-Ereignissen abgeleitet. */
@@ -584,17 +606,19 @@ function renderStats(){
   Object.keys(c).forEach(k => { const r = fieldRow(c[k]); tg += r.goals; ts += r.shots; ttf += r.tf; });
   h += `<div class="kpis">
     <div class="kpi"><b>${tg}:${tga}</b><span>Tore</span></div>
-    <div class="kpi"><b>${pct(tg, ts)}</b><span>Wurfquote</span></div>
+    <div class="kpi"><b>${ts}</b><span>Würfe</span></div>
     <div class="kpi"><b>${ttf}</b><span>Techn. Fehler</span></div>
     <div class="kpi"><b>${S.statsScope==='season' ? `${w}-${d}-${l}` : sel.length ? (()=>{const s=score(sel[0]);return s.us>s.them?'Sieg':s.us<s.them?'Niederl.':'Remis'})() : ''}</b><span>${S.statsScope==='season'?'S-U-N':'Ergebnis'}</span></div></div>`;
-  { let oSv = 0, oGa = 0, oMiss = 0;
-    for(const g of sel) for(const e of g.events){ if(e.type==='save'||e.type==='p7save') oSv++; else if(e.type==='conceded') oGa++; else if(e.type==='oppMiss') oMiss++; }
+  { let oSv = 0, oGa = 0, oMiss = 0, t7 = 0, t7a = 0;
+    for(const g of sel) for(const e of g.events){ if(e.type==='save'||e.type==='p7save') oSv++; else if(e.type==='conceded') oGa++; else if(e.type==='oppMiss') oMiss++;
+      if(e.type==='p7goal'){ t7++; t7a++; } else if(e.type==='p7miss') t7a++; }
     const oSh = oSv + oGa + oMiss;
-    if(oSh) h += `<div class="kpis">
-      <div class="kpi"><b>${oSh}</b><span>Würfe Gegner</span></div>
-      <div class="kpi"><b>${pct(oGa, oSh)}</b><span>Quote Gegner</span></div>
-      <div class="kpi"><b>${oSv}</b><span>Paraden</span></div>
-      <div class="kpi"><b>${oMiss}</b><span>Fehlwürfe Gegner</span></div></div>`; }
+    h += `<div class="card"><b>Quoten Mannschaft</b><div class="gauges">
+      ${gauge(tg, ts, 'Wurfquote<small>Tore/Würfe</small>')}
+      ${gauge(t7, t7a, '7m-Quote<small>verwandelt</small>')}
+      ${gauge(oSv, oSv + oGa, 'Fangquote<small>Paraden/Würfe aufs Tor</small>')}
+      ${gauge(oSv + oMiss, oSh, 'Abwehrquote<small>Gegnerwürfe ohne Tor</small>')}
+    </div></div>`; }
   if(S.statsScope === 'game' && sel.length){
     const g0 = sel[0], tos = g0.events.filter(e => e.type === 'to' || e.type === 'toOpp');
     if(tos.length) h += `<div class="card"><b>Auszeiten</b>${tos.map(e => `<div class="ev"><span class="min">${(e.half||1)}. ${Math.floor(e.t/60)}′</span><span class="pill ${EV[e.type].c}">${EV[e.type].l}</span><span class="grow"></span><span class="mute">${(() => { const s = score({events: g0.events.slice(0, g0.events.indexOf(e))}); return 'Stand ' + s.us + ':' + s.them; })()}</span></div>`).join('')}</div>`;
@@ -606,6 +630,13 @@ function renderStats(){
     h += `<div class="card"><b>Spielzeit</b><div class="mute" style="margin-bottom:8px">${S.statsScope==='season' ? 'Summe Saison, dahinter Ø pro Spiel' : 'Minuten in diesem Spiel'} · <span style="color:var(--pri)">■</span> Feld <span style="color:var(--y)">■</span> Tor</div>` +
       ptRows.map(x => `<div class="ptr"><span class="ptn">#${esc(x.p.number)} ${esc(x.p.name)}</span><span class="ptb"><i style="width:${x.f/mx*100}%"></i><i class="g" style="width:${x.g/mx*100}%"></i></span><span class="ptv">${Math.floor((x.f+x.g)/60)}′${S.statsScope==='season' && x.gp ? ` <small>Ø ${Math.round((x.f+x.g)/60/x.gp)}</small>` : ''}</span></div>`).join('') + `</div>`;
   }
+  // Wurfquoten je Spieler
+  const qRows = players().map(p => ({p, r: fieldRow(c[p.id] || {})})).filter(x => x.r.shots > 0).sort((a,b) => (b.r.q - a.r.q) || (b.r.shots - a.r.shots));
+  if(qRows.length) h += `<div class="card"><b>Wurfquote je Spieler</b><div class="gauges">` +
+    qRows.map(({p, r}) => `<div data-a="playerDetail" data-id="${p.id}" style="cursor:pointer">${gauge(r.goals, r.shots, '#' + esc(p.number) + ' ' + esc(p.name))}</div>`).join('') + `</div></div>`;
+  const kRows = players().map(p => ({p, r: gkRow(c[p.id] || {})})).filter(x => x.r.faced > 0);
+  if(kRows.length) h += `<div class="card"><b>Fangquote Torhüter</b><div class="gauges">` +
+    kRows.map(({p, r}) => `<div data-a="playerDetail" data-id="${p.id}" style="cursor:pointer">${gauge(r.saves, r.faced, '#' + esc(p.number) + ' ' + esc(p.name))}</div>`).join('') + `</div></div>`;
   // Feldspieler
   const cols = [['gp','Sp'],['min','Min'],['goals','Tore'],['shots','Würfe'],['q','Quote'],['p7','7m'],['bg','BG'],['tf','TF'],['two','2′']];
   const rows = players().map(p => ({p, r: fieldRow(c[p.id] || {})})).filter(x => x.r.min || x.r.shots || x.r.tf || x.r.assist || x.r.bg);
@@ -643,14 +674,22 @@ function renderPlayer(){
     <div class="kpis">
       <div class="kpi"><b>${tot.goals}</b><span>Tore</span></div>
       <div class="kpi"><b>${tot.min + gk.min}′</b><span>Spielzeit</span></div>
-      <div class="kpi"><b>${pct(tot.goals, tot.shots)}</b><span>Wurfquote</span></div>
+      <div class="kpi"><b>${tot.shots - tot.goals}</b><span>Fehlwürfe</span></div>
       <div class="kpi"><b>${tot.shots}</b><span>Würfe</span></div>
       <div class="kpi"><b>${tot.bg}</b><span>Ballgew.</span></div>
       <div class="kpi"><b>${tot.tf}</b><span>Techn. F.</span></div>
       <div class="kpi"><b>${tot.gp ? Math.round((tot.min + gk.min)/tot.gp) + '′' : '–'}</b><span>Ø pro Spiel</span></div>
       <div class="kpi"><b>${tot.two}</b><span>2 Min</span></div>
     </div>`;
-  if(gk.faced) h += `<div class="kpis" style="grid-template-columns:repeat(3,1fr)"><div class="kpi"><b>${gk.saves}</b><span>Paraden</span></div><div class="kpi"><b>${gk.ga}</b><span>Gegentore</span></div><div class="kpi"><b>${pct(gk.saves, gk.faced)}</b><span>Fangquote</span></div></div>`;
+  { const T = gs.map(g => ({g, t: playTime(g)[p.id] || {f:0, g:0}}));
+    const played = T.filter(x => x.t.f + x.t.g > 0);
+    const mine = played.reduce((a, x) => a + x.t.f + x.t.g, 0), avail = played.reduce((a, x) => a + gameLen(x.g), 0);
+    h += `<div class="card"><b>Quoten</b><div class="gauges">
+      ${gauge(tot.goals, tot.shots, 'Wurfquote')}
+      ${gauge(tot.p7, tot.p7a, '7m-Quote')}
+      ${gauge(mine, avail, 'Spielzeitanteil<small>in seinen Spielen</small>', Math.floor(mine/60) + '/' + Math.floor(avail/60) + ' min')}
+      ${gk.faced ? gauge(gk.saves, gk.faced, 'Fangquote') : ''}
+    </div></div>`; }
   if(gs.length){
     const per = gs.map(g => ({g, r: fieldRow(countsFor([g])[p.id] || {})}));
     const max = Math.max(1, ...per.map(x => x.r.goals));
